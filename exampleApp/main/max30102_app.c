@@ -59,6 +59,7 @@ static esp_err_t i2c_master_init(void)
 static void i2c_test_task(void *arg)
 {
     uint8_t ret = MAX30102_OK;
+    uint8_t reg_addr, setup;
     uint32_t task_idx = (uint32_t)arg;
     uint8_t bpmBuffer[8];
     uint8_t bpmIdx = 0;
@@ -79,7 +80,18 @@ static void i2c_test_task(void *arg)
         // After getting the values, get a semaphore in order to
         // print the information for monitoring
 
-        ret = max30102_set_sensor_mode(MAX30102_HR_MODE, &device);
+        reg_addr = MAX30102_FIFO_WR_PTR_ADDR;
+        setup = 0x00;
+        ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
+        device.delay_us(40000);
+        reg_addr = MAX30102_FIFO_RD_PTR_ADDR;
+        ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
+        device.delay_us(4000);
+        reg_addr = MAX30102_FIFO_OVF_CTR_ADDR;
+        ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
+        device.delay_us(40000);
+
+        ret = max30102_set_sensor_mode(MAX30102_MULTILED_MODE, &device);
         device.delay_us(700000);
     
         for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE; i++){
@@ -138,6 +150,8 @@ static void i2c_test_task(void *arg)
 void app_main(void)
 {
     int8_t ret;
+    uint8_t reg_addr;
+    uint8_t setup;
     print_mux = xSemaphoreCreateMutex();
 
     // Before access to the MAX30102, we need to setup the device handler
@@ -167,13 +181,26 @@ void app_main(void)
 
     // Setup the FIFO
     // - No samples average.
-    ret = max30102_set_fifo(MAX30102_SMP_AVE_NO, &device);
+    ret = max30102_set_fifo(MAX30102_SMP_AVE_2, &device);
     device.delay_us(40000);
+
+    reg_addr = MAX30102_SLOT_1_2_ADDR;
+    setup = 0x01;
+    ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
+    device.delay_us(40000);
+
+    reg_addr = MAX30102_SLOT_3_4_ADDR;
+    ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
 
     // Setup the LEDs current amplitude
     // - Aprox. 3 mA
-    ret = max30102_set_led_amplitude(0x0F, &device);
+    // ret = max30102_set_led_amplitude(0x01, &device);
+    reg_addr = MAX30102_LED1_PA_ADDR;
+    setup = 0x7F;
+    ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
     device.delay_us(40000);
+    reg_addr = MAX30102_LED2_PA_ADDR;
+    ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
 
     // For this example there is only one task which setup the MAX30102, and then
     // reads the parameters periodically.

@@ -202,11 +202,13 @@ int8_t max30102_set_led_amplitude(uint8_t amplitude, struct max30102_dev *dev)
     if (rslt == MAX30102_OK)
     {
         rslt = max30102_set_regs(&reg_addr, &amplitude, 1, dev);
+        dev->delay_us(40000);
         reg_addr = MAX30102_LED2_PA_ADDR;
+    }
 
-        dev->delay_us(10000);
-
+    if (rslt == MAX30102_OK){
         rslt = max30102_set_regs(&reg_addr, &amplitude, 1, dev);
+        dev->delay_us(40000);
     }
 
     return rslt;
