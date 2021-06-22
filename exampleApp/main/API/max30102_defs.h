@@ -171,7 +171,7 @@
 #define MAX30102_ALL                                UINT8_C(0x07)
 
 // /**\name Settings selection macros */
-#define MAX30102_BPM_SAMPLES_SIZE 50 /*!< The size of the buffer for the samples from sensor */
+#define MAX30102_BPM_SAMPLES_SIZE 100 /*!< The size of the buffer for the samples from sensor */
 #define MAX30102_BPM_PERIOD_SAMPLE_SIZE 4 /*!< The size of the buffer for average period */
 #define MAX30102_BPM_NO_SAMPLES MAX30102_BPM_SAMPLES_SIZE + 1 /*!< Dummy value for zero-crossing detection indexes */
 
@@ -236,7 +236,8 @@ typedef void (*max30102_delay_us_fptr_t)(uint32_t period);
 struct max30102_data
 {
     uint32_t bpm32;
-    double bpm;
+    double bpmR;
+    double bpmIR;
 };
 
 /*!

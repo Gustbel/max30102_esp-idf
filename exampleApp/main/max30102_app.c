@@ -19,13 +19,17 @@ static const char *TAG = "exampleApp";
 #define I2C_MASTER_TX_BUF_DISABLE 0                           /*!< I2C master doesn't need buffer */
 #define I2C_MASTER_RX_BUF_DISABLE 0                           /*!< I2C master doesn't need buffer */
 
+#define IIR_COEFF_SIZE 3
 
 SemaphoreHandle_t print_mux = NULL;
 
 /* The following data structures are used to interact with MAX30102 */
 static MAX30102_DEVICE device;
 static MAX30102_DATA mess_data;
-static int32_t samples[MAX30102_BPM_SAMPLES_SIZE];
+static double samples[MAX30102_BPM_SAMPLES_SIZE];
+static double samplesGrad[MAX30102_BPM_SAMPLES_SIZE];
+static double signal[IIR_COEFF_SIZE] = {0.0};
+static double outputNS[IIR_COEFF_SIZE] = {0.0};
 
 //
 // I2C master initialization
@@ -61,11 +65,34 @@ static void i2c_test_task(void *arg)
     uint8_t ret = MAX30102_OK;
     uint8_t reg_addr, setup;
     uint32_t task_idx = (uint32_t)arg;
-    uint8_t bpmBuffer[8];
-    uint8_t bpmIdx = 0;
-    uint32_t bpmAvg = 0;
+    uint8_t bpmBuffer[MAX30102_BPM_PERIOD_SAMPLE_SIZE];
+
+    uint8_t bpmTickCnt = 0;
+    double bpmAvg = 0.0;
+    double lastBpm = 0.0;
+    uint8_t lastSampleIdx = MAX30102_BPM_SAMPLES_SIZE;
+    uint8_t firstSampleIdx = MAX30102_BPM_SAMPLES_SIZE;
+
     const uint8_t bpmAvgSize = 4;
-    int cnt = 0, i;
+    int cnt = 0, i, j;
+
+    const double a[IIR_COEFF_SIZE] = {
+        1.00000,
+        -0.74779,
+        0.27221
+    };
+
+    const double b[IIR_COEFF_SIZE] = {
+        0.13111,
+        0.26221,
+        0.13111
+    };
+
+    const double sat_max = 250.0;
+    const double sat_min = 0.0;
+
+    
+    double samplesMax = 0.0;
 
     // Here is the main loop. Periodically reads and print the parameters
     // measured from MAX30102.
@@ -80,40 +107,102 @@ static void i2c_test_task(void *arg)
         // After getting the values, get a semaphore in order to
         // print the information for monitoring
 
+        /* FIFO reset for new adquisition */
         reg_addr = MAX30102_FIFO_WR_PTR_ADDR;
         setup = 0x00;
         ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
-        device.delay_us(40000);
+        device.delay_us(4000);
         reg_addr = MAX30102_FIFO_RD_PTR_ADDR;
         ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
         device.delay_us(4000);
         reg_addr = MAX30102_FIFO_OVF_CTR_ADDR;
         ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
-        device.delay_us(40000);
+        device.delay_us(4000);
 
-        ret = max30102_set_sensor_mode(MAX30102_MULTILED_MODE, &device);
+        /* Clear signal vector */
+        for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE; i++){
+            samples[i] = 0.0;
+        }
+
+        /* Setup adquisition mode and wait for a new vector */
+        ret = max30102_set_sensor_mode(MAX30102_SPO2_MODE, &device);
         device.delay_us(700000);
     
+        /* Get samples from sensor into signal vector */
         for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE; i++){
             ret = max30102_get_sensor_data(MAX30102_BPM, &mess_data, &device);
-            samples[i] = mess_data.bpm32;
-            device.delay_us(20000);
+            samples[i] = mess_data.bpmR;
+            device.delay_us(21000);
         }
 
-        // Once the data buffer is full, we need to get the BPM measurement.
-        // In order to improve performance, the BPM mess is filtered (mean)
-        // 
-        bpmAvg = 0;
-        for (i = bpmAvgSize - 1; i; i--){
-            bpmBuffer[i] = bpmBuffer[i-1];
+        /* IIR */
+        for (i = 0; i < IIR_COEFF_SIZE; i++){
+            signal[i] = 0.0;
+            outputNS[i] = 0.0;
+        }
+        for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE; i++){
+            for (j = IIR_COEFF_SIZE - 1; j; j--){
+                signal[j] = signal[j-1];
+                outputNS[j] = outputNS[j-1];
+            }
+            outputNS[0] = 0.0;
+            signal[0] = samples[i];
+            for (j = 0; j < IIR_COEFF_SIZE; j++){
+                outputNS[0] += b[j] * signal[j];
+            }
+            for (j = 1; j < IIR_COEFF_SIZE; j++){
+                outputNS[0] -= a[j] * outputNS[j];
+            }
+            outputNS[0] -= a[0];
+            
+            if (outputNS[0] > sat_max) outputNS[0] = sat_max;
+            else if (outputNS[0] < sat_min) outputNS[0] = sat_min;
+            samples[i] = outputNS[0];
         }
 
-        bpmBuffer[0] = max30102_get_bpm(samples);
-        for (i = 0; i < bpmAvgSize; i++){
-            bpmAvg += bpmBuffer[i];
+        /* Gradient detection */
+        for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE - 1; i++){
+            samplesGrad[i] = samples[i] - samples[i+1];
+            if (samplesGrad[i] < 0.0) samplesGrad[i] = 0.0;
+        }
+        samplesGrad[i] = 0.0;
+
+        /* Get the max value */
+        samplesMax = 0.0;
+        for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE; i++){
+            if (samplesGrad[i] > samplesMax) samplesMax = samplesGrad[i];
         }
 
-        bpmAvg /= bpmAvgSize;
+        /* Clear ticks vector */
+        for (i = 0; i < MAX30102_BPM_PERIOD_SAMPLE_SIZE; i++){
+            bpmBuffer[i] = 0;
+        }
+
+        /* Populate ticks vector from gradient detection vector */
+        for (i = 0, j = 0; i < MAX30102_BPM_SAMPLES_SIZE && j < MAX30102_BPM_PERIOD_SAMPLE_SIZE; i++){
+            if (samplesGrad[i] > (0.7 * samplesMax)){
+                bpmBuffer[j++] = i;
+                i += 5;
+            }
+        }
+
+        /* From ticks vector, get average period and period number */
+        bpmTickCnt = 0;
+        bpmAvg = 0.0;
+        for (i = 1; i < MAX30102_BPM_PERIOD_SAMPLE_SIZE; i++){
+            if (bpmBuffer[i] != 0){
+                bpmAvg += (double)bpmBuffer[i] - (double)bpmBuffer[i-1];
+                bpmTickCnt++;
+            }
+        }
+
+        /* If there is ticks detected, calculate the BPM */
+        if (bpmTickCnt > 0){
+            bpmAvg /= (double)bpmTickCnt;
+            bpmAvg *= 0.02;
+            bpmAvg = 60.0 / bpmAvg;
+            lastBpm = bpmAvg;
+        }
 
         xSemaphoreTake(print_mux, portMAX_DELAY);
 
@@ -127,7 +216,19 @@ static void i2c_test_task(void *arg)
             printf("***********************************\n\n");
             printf("Print direct values:\n");
             printf("Sensor ID: %p\n", device.chip_id);
-            printf("BPM: %d \n", bpmAvg);
+
+            // Enable this in order to get the samples and
+            // gradient vector elements printed out in the screen.
+#ifdef SAMPLES_DEBUG
+            for (i = 0; i < MAX30102_BPM_SAMPLES_SIZE; i++){
+                printf("%d,%.1f,%.1f\n", i, samples[i], samplesGrad[i]);
+            }
+            printf("%d Ticks at: ", bpmTickCnt);
+            for (i = 0; i < MAX30102_BPM_PERIOD_SAMPLE_SIZE; i++){
+                printf("%d, ", bpmBuffer[i]);
+            }
+#endif
+            printf("\nBPM: %.1f\n", bpmAvg);
         } 
         else 
         {
@@ -181,14 +282,15 @@ void app_main(void)
 
     // Setup the FIFO
     // - No samples average.
-    ret = max30102_set_fifo(MAX30102_SMP_AVE_2, &device);
+    ret = max30102_set_fifo(MAX30102_SMP_AVE_NO, &device);
     device.delay_us(40000);
 
     reg_addr = MAX30102_SLOT_1_2_ADDR;
-    setup = 0x01;
+    setup = 0x02;
     ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
     device.delay_us(40000);
 
+    setup = 0x00;
     reg_addr = MAX30102_SLOT_3_4_ADDR;
     ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
 
@@ -196,10 +298,11 @@ void app_main(void)
     // - Aprox. 3 mA
     // ret = max30102_set_led_amplitude(0x01, &device);
     reg_addr = MAX30102_LED1_PA_ADDR;
-    setup = 0x7F;
+    setup = 0x24;
     ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
     device.delay_us(40000);
     reg_addr = MAX30102_LED2_PA_ADDR;
+    setup = 0x24;
     ret = max30102_set_regs(&reg_addr, &setup, 1, &device);
 
     // For this example there is only one task which setup the MAX30102, and then

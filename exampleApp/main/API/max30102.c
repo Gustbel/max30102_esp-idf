@@ -292,11 +292,17 @@ void max30102_parse_sensor_data(const uint8_t *reg_data, struct max30102_data *d
     uint32_t data_lsb = 0;
     uint32_t data_msb = 0;
 
-    data_msb = (uint32_t)reg_data[0] << 16;
+    data_msb = (uint32_t)reg_data[2] << 16;
     data_xlsb = (uint32_t)reg_data[1] << 8;
-    data_lsb = (uint32_t)reg_data[2];
+    data_lsb = (uint32_t)reg_data[0];
     data->bpm32 = data_msb | data_xlsb | data_lsb;
-    data->bpm = (double)data->bpm32 / 16384.0;
+    data->bpmIR = (double)data->bpm32 / 262144.0;
+
+    data_msb = (uint32_t)reg_data[5] << 16;
+    data_xlsb = (uint32_t)reg_data[4] << 8;
+    data_lsb = (uint32_t)reg_data[3];
+    data->bpm32 = data_msb | data_xlsb | data_lsb;
+    data->bpmR = (double)data->bpm32 / 262144.0;
 }
 
 /*!
